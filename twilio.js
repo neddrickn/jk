@@ -1,30 +1,21 @@
-// routes/leads.js — Lead pipeline CRUD for the dashboard.
-
-import { Router } from 'express';
-import { leads } from '../db.js';
-
-const router = Router();
-
-router.get('/', (req, res) => {
-  const { status } = req.query;
-  res.json({ leads: leads.list({ status }) });
-});
-
-router.get('/stats', (req, res) => {
-  res.json(leads.stats());
-});
-
-router.get('/:id', (req, res) => {
-  const lead = leads.get(req.params.id);
-  if (!lead) return res.status(404).json({ error: 'not found' });
-  res.json(lead);
-});
-
-router.patch('/:id', (req, res) => {
-  const existing = leads.get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'not found' });
-  const updated = leads.update(req.params.id, req.body || {});
-  res.json(updated);
-});
-
-export default router;
+{
+  "name": "thalamus-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Thalamus operating layer — backend API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.1",
+    "better-sqlite3": "^11.3.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "nanoid": "^5.0.7",
+    "twilio": "^5.3.3"
+  }
+}

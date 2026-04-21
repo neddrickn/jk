@@ -1,51 +1,23 @@
-// routes/chat.js — AI chatbot for the website widget.
-// Auto-extracts contact fields as the conversation progresses and creates a lead
-// the moment we have name + phone.
+# Thalamus backend environment
+# Copy to .env and fill in. The server runs without these, with reduced functionality.
 
-import { Router } from 'express';
-import { chat, leads } from '../db.js';
-import { chatReply, triageLead } from '../services/ai.js';
+# ─── Server ────────────────────────────────────────────────
+PORT=4000
+FRONTEND_ORIGIN=http://localhost:5173
+BUSINESS_NAME="Acme Plumbing"
+BUSINESS_OWNER_PHONE=+14045550199
 
-const router = Router();
+# ─── Anthropic (AI chatbot + lead triage) ─────────────────
+# https://console.anthropic.com/
+ANTHROPIC_API_KEY=
 
-router.post('/', async (req, res) => {
-  const { session_id, message } = req.body || {};
-  if (!session_id || !message) {
-    return res.status(400).json({ error: 'session_id and message required' });
-  }
+# ─── Twilio (SMS textback + review requests) ──────────────
+# https://console.twilio.com/
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_FROM_NUMBER=+14045550100
 
-  const conv = chat.getOrCreateConversation(session_id);
-  chat.addMessage(conv.id, 'user', message);
-
-  const history = chat.getMessages(conv.id).slice(0, -1); // exclude the message we just stored
-  const { reply, extracted } = await chatReply(history, message);
-
-  chat.addMessage(conv.id, 'assistant', reply);
-
-  // Auto-create a lead when we've got enough to act on.
-  if (extracted && (extracted.phone || extracted.email) && extracted.name && !conv.lead_id) {
-    const triage = await triageLead(extracted);
-    const lead = leads.create({
-      source: 'chatbot',
-      name: extracted.name,
-      phone: extracted.phone,
-      email: extracted.email,
-      service_type: extracted.service_type,
-      urgency: triage.urgency,
-      description: extracted.description,
-      address: extracted.address,
-      priority_score: triage.priority_score,
-      ai_summary: triage.ai_summary,
-    });
-    chat.linkLead(conv.id, lead.id);
-  }
-
-  res.json({ reply });
-});
-
-router.get('/:session_id', (req, res) => {
-  const conv = chat.getOrCreateConversation(req.params.session_id);
-  res.json({ messages: chat.getMessages(conv.id) });
-});
-
-export default router;
+# ─── Reviews ───────────────────────────────────────────────
+# Paste the link customers see when leaving a Google review.
+# Find it in Google Business Profile > "Get more reviews".
+GOOGLE_REVIEW_LINK=https://g.page/r/your-business-id/review

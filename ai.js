@@ -1,71 +1,76 @@
-// server.js — Thalamus unified server.
-// Serves the built React frontend AND the API from one process.
+// routes/reviews.js — Automatic review requests.
+//
+// Two ways to fire:
+//   POST /api/reviews/send  { lead_id }  — manually trigger from the dashboard
+//   POST /api/reviews/auto                — scan completed jobs, send to any that haven't been asked
+//
+// The typical flow: a dispatcher marks a lead as `status: completed` in the
+// dashboard, which queues a review request. The owner reviews queued requests
+// once a day or lets /auto run on a cron.
 
-import 'dotenv/config';
-import express from 'express';
-import cors from 'cors';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { Router } from 'express';
+import { leads, reviews } from '../db.js';
+import { sendSms } from '../services/sms.js';
 
-import intakeRoutes from './routes/intake.js';
-import leadsRoutes  from './routes/leads.js';
-import chatRoutes   from './routes/chat.js';
-import twilioRoutes from './routes/twilio.js';
-import reviewsRoutes from './routes/reviews.js';
+const router = Router();
+const BUSINESS_NAME = process.env.BUSINESS_NAME || 'our shop';
+const REVIEW_LINK = process.env.GOOGLE_REVIEW_LINK || '';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const app = express();
-const PORT = process.env.PORT || 4000;
+function buildReviewMessage(name) {
+  const first = (name || '').split(' ')[0] || 'there';
+  const link = REVIEW_LINK || '[configure GOOGLE_REVIEW_LINK]';
+  return `Hi ${first} — thanks for choosing ${BUSINESS_NAME}! If we did good work today, a quick 5-star review would mean a lot: ${link}`;
+}
 
-// In dev, the React dev server runs on :5173 and we allow CORS.
-// In production, the frontend is served from the same origin, so CORS is a no-op.
-app.use(cors({ origin: true, credentials: true }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true })); // Twilio webhooks use form-encoded
+router.post('/send', async (req, res) => {
+  const { lead_id } = req.body || {};
+  if (!lead_id) return res.status(400).json({ error: 'lead_id required' });
 
-// ─── API routes ─────────────────────────────────────────
-app.get('/api/health', (req, res) => {
-  res.json({
-    ok: true,
-    service: 'thalamus',
-    integrations: {
-      anthropic: !!process.env.ANTHROPIC_API_KEY,
-      twilio: !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN),
-    },
+  const lead = leads.get(lead_id);
+  if (!lead) return res.status(404).json({ error: 'lead not found' });
+  if (!lead.phone) return res.status(400).json({ error: 'lead has no phone' });
+
+  const body = buildReviewMessage(lead.name);
+  const result = await sendSms(lead.phone, body);
+  const record = reviews.create({
+    lead_id,
+    channel: 'sms',
+    status: result.sent || result.stub ? 'sent' : 'failed',
   });
+
+  res.json({ ok: true, review_request: record, sms: result });
 });
 
-app.use('/api/intake',  intakeRoutes);
-app.use('/api/leads',   leadsRoutes);
-app.use('/api/chat',    chatRoutes);
-app.use('/api/twilio',  twilioRoutes);
-app.use('/api/reviews', reviewsRoutes);
+// Sweep: send review requests for every completed lead that hasn't been asked yet.
+router.post('/auto', async (req, res) => {
+  const completed = leads.list({ status: 'completed', limit: 500 });
+  const sent = [];
 
-// API 404
-app.use('/api', (req, res) => res.status(404).json({ error: 'not found' }));
+  for (const lead of completed) {
+    const already = reviews.list(500).some(r => r.lead_id === lead.id);
+    if (already || !lead.phone) continue;
 
-// ─── Frontend static serving ────────────────────────────
-// The built React app lives at ../frontend/dist after `npm run build`.
-const frontendDist = path.resolve(__dirname, '..', 'frontend', 'dist');
-app.use(express.static(frontendDist));
+    const result = await sendSms(lead.phone, buildReviewMessage(lead.name));
+    const record = reviews.create({
+      lead_id: lead.id,
+      channel: 'sms',
+      status: result.sent || result.stub ? 'sent' : 'failed',
+    });
+    sent.push(record);
+  }
 
-// For any non-API route, serve index.html so React Router handles it client-side.
-app.get('*', (req, res) => {
-  res.sendFile(path.join(frontendDist, 'index.html'), err => {
-    if (err) {
-      res.status(500).send('Frontend not built. Run `npm run build` first.');
-    }
-  });
+  res.json({ ok: true, sent_count: sent.length, sent });
 });
 
-// Error handler
-app.use((err, req, res, next) => {
-  console.error('[error]', err);
-  res.status(500).json({ error: err.message || 'internal error' });
+router.get('/', (req, res) => {
+  res.json({ requests: reviews.list() });
 });
 
-app.listen(PORT, () => {
-  console.log(`\n  Thalamus listening on :${PORT}`);
-  console.log(`  Anthropic: ${process.env.ANTHROPIC_API_KEY ? 'configured' : 'stub (rule-based)'}`);
-  console.log(`  Twilio:    ${process.env.TWILIO_ACCOUNT_SID ? 'configured' : 'stub (console only)'}\n`);
+// Public click-tracker — stick this in the SMS link if you want CTR metrics.
+router.get('/click/:id', (req, res) => {
+  reviews.markClicked(req.params.id);
+  if (REVIEW_LINK) return res.redirect(REVIEW_LINK);
+  res.send('Thanks!');
 });
+
+export default router;
